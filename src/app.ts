@@ -68,16 +68,38 @@ app.command('/design-review', async ({ ack, body, client }) => {
   });
 });
 
-app.command('/total', async ({ ack, respond }) => {
+app.command('/total', async ({ ack, respond, client, body }) => {
   await ack();
 
-  const totalReviews = 28;
-  const approved = 20;
-  const needsFixes = 8;
-  const share = ((needsFixes / totalReviews) * 100).toFixed(1);
+  // Claude: count the bot's own result messages in this channel for the current quarter (UTC).
+  // Assumes every button click posts exactly one message; deleting a message removes it from the count.
+  const now = new Date();
+  const quarter = Math.floor(now.getUTCMonth() / 3);
+  const quarterStart = Date.UTC(now.getUTCFullYear(), quarter * 3, 1) / 1000;
+
+  let approved = 0;
+  let needsFixes = 0;
+  let cursor: string | undefined;
+  do {
+    const page = await client.conversations.history({
+      channel: body.channel_id,
+      oldest: String(quarterStart),
+      limit: 200,
+      cursor,
+    });
+    for (const m of page.messages ?? []) {
+      if (!m.bot_id || !m.text) continue;
+      if (m.text.endsWith('approved this UI review.')) approved++;
+      else if (m.text.endsWith('marked this UI review as needs fixes.')) needsFixes++;
+    }
+    cursor = page.response_metadata?.next_cursor || undefined;
+  } while (cursor);
+
+  const totalReviews = approved + needsFixes;
+  const share = totalReviews === 0 ? '0.0' : ((needsFixes / totalReviews) * 100).toFixed(1);
 
   await respond({
-    text: `Design review totals\n- Total reviews: ${totalReviews}\n- Approved: ${approved}\n- Needs fixes: ${needsFixes}\n- Share needing fixes: ${share}%`,
+    text: `Design review totals for Q${quarter + 1} ${now.getUTCFullYear()}\n- Total reviews: ${totalReviews}\n- Approved: ${approved}\n- Needs fixes: ${needsFixes}\n- Share needing fixes: ${share}%`,
   });
 });
 
