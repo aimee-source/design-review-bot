@@ -4,9 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "build": "tsc -p tsconfig.json",
-    "start": "node dist/index.js"
+    "dev": "tsx watch src/local.ts",
+    "build:local": "tsc -p tsconfig.json",
+    "start": "node dist/local.js"
   },
   "dependencies": {
     "@slack/bolt": "^3.21.4",
