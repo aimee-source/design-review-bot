@@ -49,3 +49,4 @@ https://your-bot-project.vercel.app/slack/events
 - This bot project is the Slack webhook app.
 - `PREVIEW_URL` is the app being reviewed.
 - The two URLs are different.
+# design-review-bot
