@@ -93,6 +93,7 @@ app.command('/total', async ({ ack, respond, client, body }) => {
   const quarter = Math.floor(now.getUTCMonth() / 3);
   const quarterStart = Date.UTC(now.getUTCFullYear(), quarter * 3, 1) / 1000;
 
+  let cards = 0;
   let approved = 0;
   let blocked = 0;
   let cursor: string | undefined;
@@ -105,17 +106,20 @@ app.command('/total', async ({ ack, respond, client, body }) => {
     });
     for (const m of page.messages ?? []) {
       if (!m.bot_id || !m.text) continue;
-      if (m.text.endsWith('approved this UI review.')) approved++;
+      // Claude: review cards are recognised by their fallback text (PR cards and /design-review cards).
+      if (m.text.startsWith('UI review: ') || m.text.startsWith('Design review: ')) cards++;
+      else if (m.text.endsWith('approved this UI review.')) approved++;
       else if (m.text.endsWith('blocked this UI review.') || m.text.endsWith('marked this UI review as needs fixes.')) blocked++;
     }
     cursor = page.response_metadata?.next_cursor || undefined;
   } while (cursor);
 
-  const totalReviews = approved + blocked;
-  const share = totalReviews === 0 ? '0.0' : ((blocked / totalReviews) * 100).toFixed(1);
+  // Claude: share blocked = blocked / (approved + blocked); cards still awaiting review are left out.
+  const decided = approved + blocked;
+  const share = decided === 0 ? '0.0' : ((blocked / decided) * 100).toFixed(1);
 
   await respond({
-    text: `Design review totals for Q${quarter + 1} ${now.getUTCFullYear()}\n- Total reviews: ${totalReviews}\n- Approved: ${approved}\n- Blocked: ${blocked}\n- Share blocked: ${share}%`,
+    text: `Design review totals for Q${quarter + 1} ${now.getUTCFullYear()}\n- UI cards sent: ${cards}\n- Approved: ${approved}\n- Blocked: ${blocked}\n- Share blocked: ${share}%`,
   });
 });
 
@@ -129,6 +133,16 @@ async function postDecision(body: any, client: any, verb: string) {
     channel: channelId,
     text: `${prefix}<@${userId}> ${verb} this UI review.`,
   });
+
+  // Claude: replace the card's buttons with the decision so each card can only be decided once.
+  const message = body.message;
+  if (message?.ts && Array.isArray(message.blocks)) {
+    const icon = verb === 'approved' ? ':white_check_mark:' : ':no_entry:';
+    const blocks = message.blocks
+      .filter((b: any) => b.type !== 'actions')
+      .concat([{ type: 'context', elements: [{ type: 'mrkdwn', text: `${icon} ${verb[0].toUpperCase()}${verb.slice(1)} by <@${userId}>` }] }]);
+    await client.chat.update({ channel: channelId, ts: message.ts, text: message.text, blocks });
+  }
 }
 
 app.action('approve_review', async ({ ack, body, client }) => {
@@ -216,6 +230,14 @@ server.post('/github/webhook', express.raw({ type: '*/*', limit: '5mb' }), async
     return;
   }
 
+  // Claude: only review merges into the repo's default branch (usually main), i.e. code queued for release.
+  // Merges into feature branches are ignored. If GitHub doesn't send the default branch, nothing is filtered.
+  const defaultBranch: string | undefined = payload.repository?.default_branch;
+  if (defaultBranch && pr.base?.ref !== defaultBranch) {
+    res.status(200).send(`ignored: merged into ${pr.base?.ref}, not ${defaultBranch}`);
+    return;
+  }
+
   try {
     const repo: string = payload.repository.full_name;
     const files = await listChangedFiles(repo, pr.number);
@@ -233,7 +255,9 @@ server.post('/github/webhook', express.raw({ type: '*/*', limit: '5mb' }), async
       `*PR:* <${pr.html_url}|${repo}#${pr.number}: ${title}>`,
       `*Developer:* ${pr.user?.login ?? 'unknown'} · *Merged into:* \`${pr.base?.ref}\``,
       `*UI files changed (${uiFiles.length}):* ${shown}${more}`,
-      stagingUrl ? `*Test on:* <${stagingUrl}|Open staging>` : '*Test on:* no staging link set for this repo yet',
+      stagingUrl
+        ? `*Test on:* <${stagingUrl}|Open staging>`
+        : `*Review:* check the screenshots in the <${pr.html_url}|PR description>`,
     ].join('\n');
 
     // Post before responding: Vercel can stop the function once the response is sent.
