@@ -107,9 +107,12 @@ app.command('/total', async ({ ack, respond, client, body }) => {
     for (const m of page.messages ?? []) {
       if (!m.bot_id || !m.text) continue;
       // Claude: review cards are recognised by their fallback text (PR cards and /design-review cards).
-      if (m.text.startsWith('UI review: ') || m.text.startsWith('Design review: ')) cards++;
-      else if (m.text.endsWith('approved this UI review.')) approved++;
-      else if (m.text.endsWith('blocked this UI review.') || m.text.endsWith('marked this UI review as needs fixes.')) blocked++;
+      if (!(m.text.startsWith('UI review: ') || m.text.startsWith('Design review: '))) continue;
+      cards++;
+      // Claude: the decision lives on the card as a context note ("Approved by" / "Blocked by").
+      const note = JSON.stringify((m as any).blocks ?? []);
+      if (note.includes('Approved by')) approved++;
+      else if (note.includes('Blocked by')) blocked++;
     }
     cursor = page.response_metadata?.next_cursor || undefined;
   } while (cursor);
@@ -129,14 +132,14 @@ async function postDecision(body: any, client: any, verb: string) {
   const reference = body.actions?.[0]?.value;
   const prefix = reference ? `${reference}: ` : '';
 
-  await client.chat.postMessage({
-    channel: channelId,
-    text: `${prefix}<@${userId}> ${verb} this UI review.`,
-  });
-
   // Claude: replace the card's buttons with the decision so each card can only be decided once.
+  // No separate channel message; /total counts the decision note on the card.
   const message = body.message;
-  if (message?.ts && Array.isArray(message.blocks)) {
+  if (!message?.ts || !Array.isArray(message.blocks)) {
+    await client.chat.postMessage({ channel: channelId, text: `${prefix}<@${userId}> ${verb} this UI review.` });
+    return;
+  }
+  {
     const icon = verb === 'approved' ? ':white_check_mark:' : ':no_entry:';
     const blocks = message.blocks
       .filter((b: any) => b.type !== 'actions')
